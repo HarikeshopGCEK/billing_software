@@ -14,6 +14,13 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+# Excel support (optional)
+try:
+    import pandas as pd
+    excel_support = True
+except ImportError:
+    excel_support = False
+
 # PDF generation (reportlab)
 try:
     from reportlab.lib.pagesizes import A4
@@ -44,14 +51,16 @@ def fmt_money(d):
 class BillingApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("IEEE Billing - ROBOCEK GCEK")
+        self.title("IEEE Billing Software")
         self.geometry("900x650")
         self.minsize(800, 600)
 
-        # Default chairperson name (you said you are the chair)
+        # Default chairperson name and position
         self.chair_name = tk.StringVar(value="Harikesh O P")
+        self.chair_position = tk.StringVar(value="IEEE RAS SB Chairperson")
 
         self.recipient_name = tk.StringVar()
+        self.recipient_phone = tk.StringVar()
         self.item_name = tk.StringVar()
         self.item_qty = tk.StringVar(value="1")
         self.item_price = tk.StringVar(value="0.00")
@@ -59,6 +68,9 @@ class BillingApp(tk.Tk):
         self.tax_pct = tk.StringVar(value="18")
 
         self.items = []  # list of dicts: {"name": ..., "qty": Decimal, "price": Decimal}
+        
+        # Master invoice database file
+        self.master_db_file = "invoice_database.csv"
 
         self._build_ui()
 
@@ -67,22 +79,29 @@ class BillingApp(tk.Tk):
         frm_top.pack(fill="x", padx=12, pady=8)
 
         # Recipient / invoice info
-        ttk.Label(frm_top, text="Recipient / Billing Person:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm_top, textvariable=self.recipient_name, width=30).grid(row=0, column=1, sticky="w", padx=(6,20))
+        ttk.Label(frm_top, text="Recipient / Billing Person: *", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm_top, textvariable=self.recipient_name, width=25).grid(row=0, column=1, sticky="w", padx=(6,12))
 
-        ttk.Label(frm_top, text="Invoice No:").grid(row=0, column=2, sticky="e")
+        ttk.Label(frm_top, text="Phone Number: *", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=2, sticky="w", padx=(6,0))
+        ttk.Entry(frm_top, textvariable=self.recipient_phone, width=15).grid(row=0, column=3, sticky="w", padx=(6,12))
+
+        ttk.Label(frm_top, text="Invoice No:").grid(row=0, column=4, sticky="e")
         self.invoice_no_var = tk.StringVar(value=self._gen_invoice_no())
-        ttk.Entry(frm_top, textvariable=self.invoice_no_var, width=18).grid(row=0, column=3, sticky="w", padx=(6,20))
+        ttk.Entry(frm_top, textvariable=self.invoice_no_var, width=18).grid(row=0, column=5, sticky="w", padx=(6,12))
 
-        ttk.Label(frm_top, text="Date:").grid(row=0, column=4, sticky="e")
+        ttk.Label(frm_top, text="Date:").grid(row=0, column=6, sticky="e")
         self.date_var = tk.StringVar(value=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        ttk.Entry(frm_top, textvariable=self.date_var, width=22).grid(row=0, column=5, sticky="w")
+        ttk.Entry(frm_top, textvariable=self.date_var, width=22).grid(row=0, column=7, sticky="w")
 
-        # Chairperson name (right-side signature)
-        ttk.Label(frm_top, text="Chairperson (signature):").grid(row=1, column=0, sticky="w", pady=(8,0))
-        ttk.Entry(frm_top, textvariable=self.chair_name, width=30).grid(row=1, column=1, sticky="w", padx=(6,20), pady=(8,0))
-        ttk.Label(frm_top, text="Organization:").grid(row=1, column=2, sticky="e", pady=(8,0))
-        ttk.Label(frm_top, text="IEEE SB GCEK", foreground="blue").grid(row=1, column=3, sticky="w", padx=(6,20), pady=(8,0))
+        # Chairperson name and position
+        ttk.Label(frm_top, text="Chairperson Name:").grid(row=1, column=0, sticky="w", pady=(8,0))
+        ttk.Entry(frm_top, textvariable=self.chair_name, width=25).grid(row=1, column=1, sticky="w", padx=(6,12), pady=(8,0))
+        
+        ttk.Label(frm_top, text="Position:").grid(row=1, column=2, sticky="w", padx=(6,0), pady=(8,0))
+        ttk.Entry(frm_top, textvariable=self.chair_position, width=20).grid(row=1, column=3, sticky="w", padx=(6,12), pady=(8,0))
+        
+        ttk.Label(frm_top, text="Organization:").grid(row=1, column=4, sticky="e", pady=(8,0))
+        ttk.Label(frm_top, text="IEEE SB GCEK", foreground="blue").grid(row=1, column=5, sticky="w", padx=(6,0), pady=(8,0))
 
         # Item entry frame
         box = ttk.LabelFrame(self, text="Add Component / Item")
@@ -154,6 +173,7 @@ class BillingApp(tk.Tk):
 
         ttk.Button(btn_frame, text="Remove Selected Item", command=self.remove_selected_item).pack(side="left", padx=6)
         ttk.Button(btn_frame, text="Save CSV (history)", command=self.save_csv).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="View Invoice History", command=self.view_invoice_history).pack(side="left", padx=6)
         ttk.Button(btn_frame, text="Generate PDF Invoice", command=self.generate_pdf).pack(side="right", padx=6)
         ttk.Button(btn_frame, text="Reset / New Invoice", command=self.reset_invoice).pack(side="right", padx=6)
 
@@ -162,7 +182,36 @@ class BillingApp(tk.Tk):
         self.tax_pct.trace_add("write", lambda *a: self._recalc_totals())
 
     def _gen_invoice_no(self):
-        return datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        """Generate next invoice number by incrementing from the last used number"""
+        # Try to get the last invoice number from the database
+        if os.path.exists(self.master_db_file):
+            try:
+                with open(self.master_db_file, "r", encoding="utf-8") as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    last_invoice = None
+                    for row in reader:
+                        last_invoice = row.get("Invoice No", "")
+                    
+                    if last_invoice:
+                        # Extract the number part and increment
+                        try:
+                            # Assuming invoice numbers are in format like "20241201123456" (timestamp)
+                            # or simple numbers like "1", "2", "3"
+                            if last_invoice.isdigit():
+                                # Simple number format
+                                next_num = int(last_invoice) + 1
+                                return str(next_num)
+                            else:
+                                # Timestamp format - just use current timestamp
+                                return datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                        except ValueError:
+                            # If parsing fails, use current timestamp
+                            return datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            except Exception:
+                pass
+        
+        # If no database exists or error occurred, start with 1
+        return "1"
 
     def clear_item_fields(self):
         self.item_name.set("")
@@ -230,6 +279,15 @@ class BillingApp(tk.Tk):
         if not self.items:
             messagebox.showwarning("No items", "Add at least one item before saving CSV.")
             return
+        
+        # Validate required fields
+        if not self.recipient_name.get().strip():
+            messagebox.showerror("Required Field Missing", "Recipient name is required. Please enter the recipient's name.")
+            return
+        
+        if not self.recipient_phone.get().strip():
+            messagebox.showerror("Required Field Missing", "Phone number is required. Please enter the recipient's phone number.")
+            return
         folder = filedialog.askdirectory(title="Choose folder to save CSV")
         if not folder:
             return
@@ -240,6 +298,7 @@ class BillingApp(tk.Tk):
             writer.writerow(["Invoice No", self.invoice_no_var.get()])
             writer.writerow(["Date", self.date_var.get()])
             writer.writerow(["Recipient", self.recipient_name.get()])
+            writer.writerow(["Phone Number", self.recipient_phone.get()])
             writer.writerow([])
             writer.writerow(["Item", "Qty", "Unit Price", "Total"])
             for it in self.items:
@@ -259,6 +318,15 @@ class BillingApp(tk.Tk):
             return
         if not self.items:
             messagebox.showwarning("No items", "Add at least one item before generating PDF.")
+            return
+        
+        # Validate required fields
+        if not self.recipient_name.get().strip():
+            messagebox.showerror("Required Field Missing", "Recipient name is required. Please enter the recipient's name.")
+            return
+        
+        if not self.recipient_phone.get().strip():
+            messagebox.showerror("Required Field Missing", "Phone number is required. Please enter the recipient's phone number.")
             return
         # Ask where to save
         fpath = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")],
@@ -280,6 +348,7 @@ class BillingApp(tk.Tk):
         story.append(Paragraph(f"Date: {self.date_var.get()}", styleN))
         story.append(Spacer(1, 6))
         story.append(Paragraph(f"Recipient: {self.recipient_name.get()}", styleN))
+        story.append(Paragraph(f"Phone Number: {self.recipient_phone.get()}", styleN))
         story.append(Spacer(1, 8))
 
         # Body
@@ -317,7 +386,7 @@ class BillingApp(tk.Tk):
         # Right: Recipient name and signature line
         footer_data = [
             [
-                Paragraph(f"<b>IEEE SB GCEK</b><br/>{self.chair_name.get()}<br/>IEEE RAS SB Chairperson", styleN),
+                Paragraph(f"<b>IEEE SB GCEK</b><br/>{self.chair_name.get()}<br/>{self.chair_position.get()}", styleN),
                 Paragraph(f"<b>{self.recipient_name.get() or 'Recipient'}</b><br/>Name & Signature", styleRight)
             ]
         ]
@@ -332,6 +401,206 @@ class BillingApp(tk.Tk):
         doc.build(story)
 
         messagebox.showinfo("PDF Generated", f"PDF invoice has been saved to:\n{fpath}")
+        
+        # Automatically save to master database
+        self.save_to_master_db()
+
+    def save_to_master_db(self):
+        """Save current invoice to master database CSV file"""
+        if not self.items:
+            return
+            
+        # Create master database if it doesn't exist
+        file_exists = os.path.exists(self.master_db_file)
+        
+        with open(self.master_db_file, "a", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writerow([
+                "Invoice No", "Date", "Recipient", "Phone Number", 
+                "Items Count", "Subtotal", "Discount %", "Discount Amount", 
+                "Tax %", "Tax Amount", "Grand Total", "Chairperson", "Chair Position"
+            ])
+            
+            # Prepare items summary
+            items_summary = "; ".join([f"{item['name']} (Qty: {item['qty']}, Price: {item['price']})" 
+                                     for item in self.items])
+            
+            # Write invoice data
+            writer.writerow([
+                self.invoice_no_var.get(),
+                self.date_var.get(),
+                self.recipient_name.get(),
+                self.recipient_phone.get(),
+                len(self.items),
+                self.subtotal_var.get(),
+                self.discount_pct.get(),
+                self.discount_amt_var.get(),
+                self.tax_pct.get(),
+                self.tax_amt_var.get(),
+                self.grand_total_var.get(),
+                self.chair_name.get(),
+                self.chair_position.get()
+            ])
+
+    def view_invoice_history(self):
+        """Display invoice history in a new window"""
+        if not os.path.exists(self.master_db_file):
+            messagebox.showinfo("No History", "No invoice history found. Generate some invoices first!")
+            return
+            
+        # Create new window for history
+        history_window = tk.Toplevel(self)
+        history_window.title("Invoice History - IEEE Billing")
+        history_window.geometry("1000x600")
+        
+        # Create treeview for history
+        frame = ttk.Frame(history_window)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Define columns
+        columns = ("Invoice No", "Date", "Recipient", "Phone", "Items", "Subtotal", "Discount", "Tax", "Grand Total")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        
+        # Configure columns
+        tree.heading("Invoice No", text="Invoice No")
+        tree.heading("Date", text="Date")
+        tree.heading("Recipient", text="Recipient")
+        tree.heading("Phone", text="Phone")
+        tree.heading("Items", text="Items Count")
+        tree.heading("Subtotal", text="Subtotal (Rs)")
+        tree.heading("Discount", text="Discount (Rs)")
+        tree.heading("Tax", text="Tax (Rs)")
+        tree.heading("Grand Total", text="Grand Total (Rs)")
+        
+        # Set column widths
+        tree.column("Invoice No", width=120, anchor="center")
+        tree.column("Date", width=140, anchor="center")
+        tree.column("Recipient", width=150, anchor="w")
+        tree.column("Phone", width=100, anchor="center")
+        tree.column("Items", width=80, anchor="center")
+        tree.column("Subtotal", width=100, anchor="e")
+        tree.column("Discount", width=100, anchor="e")
+        tree.column("Tax", width=100, anchor="e")
+        tree.column("Grand Total", width=120, anchor="e")
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+        
+        # Pack widgets
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Load data
+        try:
+            with open(self.master_db_file, "r", encoding="utf-8") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    tree.insert("", "end", values=(
+                        row.get("Invoice No", ""),
+                        row.get("Date", ""),
+                        row.get("Recipient", ""),
+                        row.get("Phone Number", ""),
+                        row.get("Items Count", ""),
+                        row.get("Subtotal", ""),
+                        row.get("Discount Amount", ""),
+                        row.get("Tax Amount", ""),
+                        row.get("Grand Total", "")
+                    ))
+        except Exception as e:
+            messagebox.showerror("Error", f"Error reading invoice history: {str(e)}")
+            return
+        
+        # Add buttons frame
+        btn_frame = ttk.Frame(history_window)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Button(btn_frame, text="Export to Excel", command=lambda: self.export_history_to_excel()).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Refresh", command=lambda: self.refresh_history(tree)).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Close", command=history_window.destroy).pack(side="right", padx=5)
+        
+        # Store reference for refresh
+        self.history_tree = tree
+
+    def refresh_history(self, tree):
+        """Refresh the history treeview"""
+        # Clear existing items
+        for item in tree.get_children():
+            tree.delete(item)
+            
+        # Reload data
+        if os.path.exists(self.master_db_file):
+            try:
+                with open(self.master_db_file, "r", encoding="utf-8") as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        tree.insert("", "end", values=(
+                            row.get("Invoice No", ""),
+                            row.get("Date", ""),
+                            row.get("Recipient", ""),
+                            row.get("Phone Number", ""),
+                            row.get("Items Count", ""),
+                            row.get("Subtotal", ""),
+                            row.get("Discount Amount", ""),
+                            row.get("Tax Amount", ""),
+                            row.get("Grand Total", "")
+                        ))
+            except Exception as e:
+                messagebox.showerror("Error", f"Error refreshing history: {str(e)}")
+
+    def export_history_to_excel(self):
+        """Export invoice history to Excel file"""
+        if not excel_support:
+            messagebox.showerror("Excel Support Missing", 
+                               "pandas library is required for Excel export.\nInstall it with: pip install pandas openpyxl")
+            return
+            
+        if not os.path.exists(self.master_db_file):
+            messagebox.showinfo("No History", "No invoice history found to export!")
+            return
+            
+        # Ask where to save Excel file
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile=f"invoice_history_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            # Read CSV and convert to Excel
+            df = pd.read_csv(self.master_db_file)
+            
+            # Create Excel writer with formatting
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Invoice History', index=False)
+                
+                # Get the workbook and worksheet
+                workbook = writer.book
+                worksheet = writer.sheets['Invoice History']
+                
+                # Auto-adjust column widths
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            messagebox.showinfo("Export Successful", f"Invoice history exported to:\n{file_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Error exporting to Excel: {str(e)}")
 
     def reset_invoice(self):
         if not messagebox.askyesno("Confirm", "Reset invoice? All current items will be cleared."):
@@ -340,9 +609,11 @@ class BillingApp(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.recipient_name.set("")
+        self.recipient_phone.set("")
+        self.chair_position.set("IEEE RAS SB Chairperson")  # Reset to default
         self.discount_pct.set("0")
         self.tax_pct.set("18")
-        self.invoice_no_var.set(self._gen_invoice_no())
+        self.invoice_no_var.set(self._gen_invoice_no())  # Auto-increment invoice number
         self.date_var.set(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self._recalc_totals()
 
